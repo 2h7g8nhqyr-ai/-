@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>都市摩天楼 - Nokia 5310</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #1a1a2e;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Courier New', monospace;
+            gap: 20px;
+        }
+        
+        #gameContainer {
+            position: relative;
+            background: linear-gradient(180deg, #0d1b2a 0%, #1b263b 100%);
+            border: 8px solid #333;
+            border-radius: 20px;
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.8);
+        }
+        
+        #gameCanvas {
+            display: block;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        
+        #controlBar {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            background: linear-gradient(180deg, #2a2a2a 0%, #1a1a1a 100%);
+            padding: 15px 30px;
+            border-radius: 15px;
+            border: 4px solid #444;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+        }
+        
+        #instructions {
+            color: #fff;
+            font-size: 14px;
+            text-align: center;
+        }
+        
+        #virtualKeys {
+            display: flex;
+            gap: 20px;
+        }
+        
+        .virtualKey {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(180deg, #4a4a4a 0%, #2a2a2a 100%);
+            border: 3px solid #555;
+            border-radius: 10px;
+            color: #fff;
+            font-size: 12px;
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+            transition: all 0.1s;
+        }
+        
+        .virtualKey:active {
+            background: linear-gradient(180deg, #3a3a3a 0%, #1a1a1a 100%);
+            transform: scale(0.95);
+        }
+        
+        .virtualKey.select {
+            background: linear-gradient(180deg, #2ecc71 0%, #27ae60 100%);
+            border-color: #3498db;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+    </div>
+    <div id="controlBar">
+        <div id="instructions">空格键或点击"确定"按钮放置楼层 | P键暂停</div>
+        <div id="virtualKeys">
+            <div class="virtualKey" id="pauseBtn">暂停</div>
+            <div class="virtualKey select" id="selectBtn">确定</div>
+        </div>
+    </div>
+
+    <script>
+        // 游戏常量配置
+        const CONFIG = {
+            CANVAS_WIDTH: 320,
+            CANVAS_HEIGHT: 480,
+            BLOCK_HEIGHT: 20,
+            INITIAL_BLOCK_WIDTH: 100,
+            BASE_Y: 420,
+            SWING_RANGE: 120,
+            INITIAL_SWING_SPEED: 0.03,
+            SPEED_INCREMENT: 0.005,
+            SPEED_INCREMENT_INTERVAL: 10,
+            PERFECT_STACK_TOLERANCE: 2,
+            FLASH_COUNT: 3,
+            FLASH_DURATION: 100,
+            SHAKE_DURATION: 500,
+            SHAKE_INTENSITY: 5
+        };
+
+        // 诺基亚16色经典配色
+        const NOKIA_COLORS = {
+            BLACK: '#000000',
+            DARK_BLUE: '#000080',
+            DARK_GREEN: '#008000',
+            DARK_CYAN: '#008080',
+            DARK_RED: '#800000',
+            DARK_MAGENTA: '#800080',
+            DARK_YELLOW: '#808000',
+            LIGHT_GRAY: '#C0C0C0',
+            DARK_GRAY: '#808080',
+            BLUE: '#0000FF',
+            GREEN: '#00FF00',
+            CYAN: '#00FFFF',
+            RED: '#FF0000',
+            MAGENTA: '#FF00FF',
+            YELLOW: '#FFFF00',
+            WHITE: '#FFFFFF'
+        };
+
+        // 游戏状态枚举
+        const GAME_STATE = {
+            TITLE: 'title',
+            PLAYING: 'playing',
+            PAUSED: 'paused',
+            GAME_OVER: 'gameOver'
+        };
+
+        // 游戏主类
+        class TowerGame {
+            constructor() {
+                this.canvas = document.getElementById('gameCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                
+                this.canvas.width = CONFIG.CANVAS_WIDTH;
+                this.canvas.height = CONFIG.CANVAS_HEIGHT;
+                
+                this.state = GAME_STATE.TITLE;
+                this.score = 0;
+                this.highScore = parseInt(localStorage.getItem('towerHighScore')) || 0;
+                
+                this.baseBlock = null;
+                this.currentBlock = null;
+                this.stackedBlocks = [];
+                
+                this.swingAngle = 0;
+                this.swingDirection = 1;
+                this.swingSpeed = CONFIG.INITIAL_SWING_SPEED;
+                
+                this.dropping = false;
+                this.dropY = 0;
+                
+                this.perfectStackFlash = 0;
+                this.flashTimer = 0;
+                
+                this.cutOffParts = [];
+                
+                this.shakeTimer = 0;
+                this.shakeX = 0;
+                this.shakeY = 0;
+                
+                this.redFilter = false;
+                
+                this.dropTrail = [];
+                this.dropParticles = [];
+                this.dropSpeedLines = [];
+                
+                this.initGame();
+                this.setupControls();
+                this.gameLoop();
+            }
+
+            // 初始化游戏
+            initGame() {
+                this.score = 0;
+                this.swingAngle = 0;
+                this.swingDirection = 1;
+                this.swingSpeed = CONFIG.INITIAL_SWING_SPEED;
+                this.dropping = false;
+                this.perfectStackFlash = 0;
+                this.cutOffParts = [];
+                this.shakeTimer = 0;
+                this.redFilter = false;
+                this.dropTrail = [];
+                this.dropParticles = [];
+                this.dropSpeedLines = [];
+                
+                this.stackedBlocks = [];
+                
+                this.baseBlock = {
+                    x: CONFIG.CANVAS_WIDTH / 2 - CONFIG.INITIAL_BLOCK_WIDTH / 2,
+                    y: CONFIG.BASE_Y,
+                    width: CONFIG.INITIAL_BLOCK_WIDTH,
+                    height: CONFIG.BLOCK_HEIGHT,
+                    color: NOKIA_COLORS.DARK_GRAY
+                };
+                
+                this.stackedBlocks.push(this.baseBlock);
+                this.spawnCurrentBlock();
+            }
+
+            // 生成新的当前楼层
+            spawnCurrentBlock() {
+                const topBlock = this.stackedBlocks[this.stackedBlocks.length - 1];
+                this.currentBlock = {
+                    x: CONFIG.CANVAS_WIDTH / 2 - topBlock.width / 2,
+                    y: 120,
+                    width: topBlock.width,
+                    height: CONFIG.BLOCK_HEIGHT,
+                    color: this.getRandomColor(),
+                    originalWidth: topBlock.width
+                };
+                this.swingAngle = 0;
+            }
+
+            // 获取随机颜色（诺基亚配色）
+            getRandomColor() {
+                const colors = [
+                    NOKIA_COLORS.BLUE,
+                    NOKIA_COLORS.GREEN,
+                    NOKIA_COLORS.CYAN,
+                    NOKIA_COLORS.RED,
+                    NOKIA_COLORS.MAGENTA,
+                    NOKIA_COLORS.YELLOW
+                ];
+                return colors[this.score % colors.length];
+            }
+
+            // 设置控制
+            setupControls() {
+                document.addEventListener('keydown', (e) => {
+                    if (e.code === 'Space') {
+                        e.preventDefault();
+                        this.handleAction();
+                    } else if (e.code === 'KeyP') {
+                        this.togglePause();
+                    }
+                });
+
+                document.getElementById('selectBtn').addEventListener('click', () => {
+                    this.handleAction();
+                });
+
+                document.getElementById('pauseBtn').addEventListener('click', () => {
+                    this.togglePause();
+                });
+            }
+
+            // 处理玩家操作
+            handleAction() {
+                switch (this.state) {
+                    case GAME_STATE.TITLE:
+                        this.state = GAME_STATE.PLAYING;
+                        this.initGame();
+                        break;
+                    case GAME_STATE.PLAYING:
+                        if (!this.dropping) {
+                            this.dropBlock();
+                        }
+                        break;
+                    case GAME_STATE.PAUSED:
+                        this.state = GAME_STATE.PLAYING;
+                        break;
+                    case GAME_STATE.GAME_OVER:
+                        this.state = GAME_STATE.TITLE;
+                        break;
+                }
+            }
+
+            // 切换暂停状态
+            togglePause() {
+                if (this.state === GAME_STATE.PLAYING) {
+                    this.state = GAME_STATE.PAUSED;
+                } else if (this.state === GAME_STATE.PAUSED) {
+                    this.state = GAME_STATE.PLAYING;
+                }
+            }
+
+            // 楼层下落
+            dropBlock() {
+                this.dropping = true;
+                this.dropY = this.currentBlock.y;
+                
+                this.dropTrail = [];
+                this.dropParticles = [];
+                this.dropSpeedLines = [];
+                
+                for (let i = 0; i < 10; i++) {
+                    this.dropSpeedLines.push({
+                        x: this.currentBlock.x + Math.random() * this.currentBlock.width,
+                        y: this.currentBlock.y,
+                        length: 10 + Math.random() * 20,
+                        speed: 3 + Math.random() * 5,
+                        alpha: 1
+                    });
+                }
+            }
+
+            // 更新游戏逻辑
+            update() {
+                if (this.state !== GAME_STATE.PLAYING) return;
+
+                if (!this.dropping) {
+                    this.updateSwing();
+                } else {
+                    this.updateDrop();
+                }
+
+                this.updateEffects();
+            }
+
+            // 更新摆动
+            updateSwing() {
+                this.swingAngle += this.swingSpeed * this.swingDirection;
+
+                if (this.swingAngle >= 1 || this.swingAngle <= -1) {
+                    this.swingDirection *= -1;
+                }
+
+                const centerX = CONFIG.CANVAS_WIDTH / 2;
+                this.currentBlock.x = Math.floor(centerX - this.currentBlock.width / 2 + this.swingAngle * CONFIG.SWING_RANGE);
+            }
+
+            // 更新下落
+            updateDrop() {
+                this.dropY += 15;
+                this.currentBlock.y = this.dropY;
+                
+                if (this.dropTrail.length < 15) {
+                    this.dropTrail.push({
+                        x: this.currentBlock.x,
+                        y: this.currentBlock.y,
+                        width: this.currentBlock.width,
+                        height: this.currentBlock.height,
+                        color: this.currentBlock.color,
+                        alpha: 0.8
+                    });
+                } else {
+                    this.dropTrail.shift();
+                    this.dropTrail.push({
+                        x: this.currentBlock.x,
+                        y: this.currentBlock.y,
+                        width: this.currentBlock.width,
+                        height: this.currentBlock.height,
+                        color: this.currentBlock.color,
+                        alpha: 0.8
+                    });
+                }
+                
+                if (Math.random() < 0.3) {
+                    this.dropParticles.push({
+                        x: this.currentBlock.x + Math.random() * this.currentBlock.width,
+                        y: this.currentBlock.y + this.currentBlock.height,
+                        vx: (Math.random() - 0.5) * 2,
+                        vy: Math.random() * 2,
+                        size: 2 + Math.random() * 3,
+                        color: this.currentBlock.color,
+                        life: 30
+                    });
+                }
+
+                const topBlock = this.stackedBlocks[this.stackedBlocks.length - 1];
+
+                if (this.currentBlock.y >= topBlock.y - CONFIG.BLOCK_HEIGHT) {
+                    this.checkCollision(topBlock);
+                }
+            }
+
+            // 检测碰撞
+            checkCollision(topBlock) {
+                const overlapLeft = Math.max(this.currentBlock.x, topBlock.x);
+                const overlapRight = Math.min(this.currentBlock.x + this.currentBlock.width, topBlock.x + topBlock.width);
+                const overlapWidth = overlapRight - overlapLeft;
+
+                if (overlapWidth <= 0) {
+                    this.gameOver();
+                } else {
+                    this.score++;
+
+                    const isPerfect = Math.abs(overlapWidth - topBlock.width) <= CONFIG.PERFECT_STACK_TOLERANCE;
+
+                    if (isPerfect) {
+                        this.currentBlock.color = NOKIA_COLORS.GREEN;
+                        this.perfectStackFlash = CONFIG.FLASH_COUNT;
+                        this.flashTimer = 0;
+                    }
+
+                    if (overlapWidth < this.currentBlock.width) {
+                        this.addCutOffParts(this.currentBlock, topBlock);
+                    }
+
+                    this.currentBlock.width = overlapWidth;
+                    this.currentBlock.x = overlapLeft;
+                    this.currentBlock.y = topBlock.y - CONFIG.BLOCK_HEIGHT;
+
+                    this.stackedBlocks.push(this.currentBlock);
+
+                    this.shiftBlocksDown();
+
+                    this.spawnCurrentBlock();
+
+                    if (this.score % CONFIG.SPEED_INCREMENT_INTERVAL === 0) {
+                        this.swingSpeed += CONFIG.SPEED_INCREMENT;
+                    }
+
+                    this.dropping = false;
+                    this.dropTrail = [];
+                    this.dropParticles = [];
+                    this.dropSpeedLines = [];
+                }
+            }
+
+            // 添加被切除的部分
+            addCutOffParts(currentBlock, topBlock) {
+                if (currentBlock.x < topBlock.x) {
+                    this.cutOffParts.push({
+                        x: currentBlock.x,
+                        y: currentBlock.y,
+                        width: topBlock.x - currentBlock.x,
+                        height: CONFIG.BLOCK_HEIGHT,
+                        color: currentBlock.color,
+                        vy: 0,
+                        life: 60
+                    });
+                }
+
+                if (currentBlock.x + currentBlock.width > topBlock.x + topBlock.width) {
+                    this.cutOffParts.push({
+                        x: topBlock.x + topBlock.width,
+                        y: currentBlock.y,
+                        width: currentBlock.x + currentBlock.width - (topBlock.x + topBlock.width),
+                        height: CONFIG.BLOCK_HEIGHT,
+                        color: currentBlock.color,
+                        vy: 0,
+                        life: 60
+                    });
+                }
+            }
+
+            // 楼层下移
+            shiftBlocksDown() {
+                for (const block of this.stackedBlocks) {
+                    block.y += CONFIG.BLOCK_HEIGHT;
+                }
+            }
+
+            // 游戏结束
+            gameOver() {
+                this.state = GAME_STATE.GAME_OVER;
+                this.shakeTimer = CONFIG.SHAKE_DURATION;
+                this.redFilter = true;
+
+                if (this.score > this.highScore) {
+                    this.highScore = this.score;
+                    localStorage.setItem('towerHighScore', this.highScore);
+                }
+            }
+
+            // 更新特效
+            updateEffects() {
+                if (this.perfectStackFlash > 0) {
+                    this.flashTimer++;
+                    if (this.flashTimer >= CONFIG.FLASH_DURATION) {
+                        this.flashTimer = 0;
+                        this.perfectStackFlash--;
+                    }
+                }
+
+                for (let i = this.cutOffParts.length - 1; i >= 0; i--) {
+                    const part = this.cutOffParts[i];
+                    part.vy += 0.5;
+                    part.y += part.vy;
+                    part.life--;
+
+                    if (part.life <= 0) {
+                        this.cutOffParts.splice(i, 1);
+                    }
+                }
+
+                for (let i = this.dropTrail.length - 1; i >= 0; i--) {
+                    this.dropTrail[i].alpha -= 0.05;
+                    if (this.dropTrail[i].alpha <= 0) {
+                        this.dropTrail.splice(i, 1);
+                    }
+                }
+
+                for (let i = this.dropParticles.length - 1; i >= 0; i--) {
+                    const particle = this.dropParticles[i];
+                    particle.x += particle.vx;
+                    particle.y += particle.vy;
+                    particle.vy += 0.1;
+                    particle.life--;
+                    particle.size *= 0.95;
+
+                    if (particle.life <= 0) {
+                        this.dropParticles.splice(i, 1);
+                    }
+                }
+
+                for (let i = this.dropSpeedLines.length - 1; i >= 0; i--) {
+                    const line = this.dropSpeedLines[i];
+                    line.y += line.speed;
+                    line.alpha -= 0.02;
+
+                    if (line.alpha <= 0) {
+                        this.dropSpeedLines.splice(i, 1);
+                    }
+                }
+
+                if (this.shakeTimer > 0) {
+                    this.shakeX = (Math.random() - 0.5) * CONFIG.SHAKE_INTENSITY;
+                    this.shakeY = (Math.random() - 0.5) * CONFIG.SHAKE_INTENSITY;
+                    this.shakeTimer -= 16;
+                } else {
+                    this.shakeX = 0;
+                    this.shakeY = 0;
+                    this.redFilter = false;
+                }
+            }
+
+            // 渲染游戏
+            render() {
+                this.ctx.save();
+                this.ctx.translate(this.shakeX, this.shakeY);
+
+                this.drawBackground();
+                this.drawStatusBar();
+
+                if (this.state === GAME_STATE.TITLE) {
+                    this.drawTitleScreen();
+                } else if (this.state === GAME_STATE.PLAYING || this.state === GAME_STATE.PAUSED) {
+                    this.drawGame();
+                    this.drawScore();
+                    
+                    if (this.state === GAME_STATE.PAUSED) {
+                        this.drawPauseScreen();
+                    }
+                } else if (this.state === GAME_STATE.GAME_OVER) {
+                    this.drawGame();
+                    this.drawGameOverScreen();
+                }
+
+                this.ctx.restore();
+
+                if (this.redFilter) {
+                    this.drawRedFilter();
+                }
+            }
+
+            // 绘制背景
+            drawBackground() {
+                const gradient = this.ctx.createLinearGradient(0, 0, 0, CONFIG.CANVAS_HEIGHT);
+                gradient.addColorStop(0, '#0d1b2a');
+                gradient.addColorStop(1, '#1b263b');
+                this.ctx.fillStyle = gradient;
+                this.ctx.fillRect(0, 0, CONFIG.CANVAS_WIDTH, CONFIG.CANVAS_HEIGHT);
+
+                this.ctx.strokeStyle = NOKIA_COLORS.DARK_BLUE;
+                this.ctx.lineWidth = 1;
+                for (let i = 0; i < CONFIG.CANVAS_HEIGHT; i += 4) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(0, i);
+                    this.ctx.lineTo(CONFIG.CANVAS_WIDTH, i);
+                    this.ctx.stroke();
+                }
+            }
+
+            // 绘制状态栏
+            drawStatusBar() {
+                this.ctx.fillStyle = NOKIA_COLORS.DARK_BLUE;
+                this.ctx.fillRect(0, 0, CONFIG.CANVAS_WIDTH, 20);
+
+                this.ctx.fillStyle = NOKIA_COLORS.WHITE;
+                this.ctx.font = '12px "Courier New"';
+                this.ctx.fillText('NOKIA', 10, 15);
+
+                const battery = '▂▄▆█';
+                this.ctx.fillText(battery, CONFIG.CANVAS_WIDTH - 50, 15);
+            }
+
+            // 绘制标题画面
+            drawTitleScreen() {
+                this.ctx.fillStyle = NOKIA_COLORS.WHITE;
+                this.ctx.font = 'bold 24px "Courier New"';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText('都市摩天楼', CONFIG.CANVAS_WIDTH / 2, 150);
+
+                this.ctx.font = '16px "Courier New"';
+                this.ctx.fillStyle = NOKIA_COLORS.CYAN;
+                this.ctx.fillText('Tower Bloxx', CONFIG.CANVAS_WIDTH / 2, 180);
+
+                this.ctx.font = '14px "Courier New"';
+                this.ctx.fillStyle = NOKIA_COLORS.YELLOW;
+                this.ctx.fillText('最高分: ' + this.highScore, CONFIG.CANVAS_WIDTH / 2, 250);
+
+                this.ctx.fillStyle = NOKIA_COLORS.GREEN;
+                this.ctx.fillText('按空格键开始', CONFIG.CANVAS_WIDTH / 2, 350);
+
+                this.drawBuildingPreview();
+            }
+
+            // 绘制建筑预览
+            drawBuildingPreview() {
+                const previewX = CONFIG.CANVAS_WIDTH / 2 - 50;
+                const previewY = 280;
+                const colors = [NOKIA_COLORS.BLUE, NOKIA_COLORS.GREEN, NOKIA_COLORS.CYAN, NOKIA_COLORS.RED, NOKIA_COLORS.MAGENTA];
+
+                for (let i = 0; i < 5; i++) {
+                    this.ctx.fillStyle = colors[i];
+                    this.ctx.fillRect(previewX + i * 5, previewY - i * 15, 100 - i * 10, 15);
+                    this.ctx.strokeStyle = NOKIA_COLORS.BLACK;
+                    this.ctx.strokeRect(previewX + i * 5, previewY - i * 15, 100 - i * 10, 15);
+                }
+            }
+
+            // 绘制游戏
+            drawGame() {
+                for (const block of this.stackedBlocks) {
+                    this.drawBlock(block);
+                }
+
+                if (this.dropping) {
+                    this.drawDropTrail();
+                    this.drawDropSpeedLines();
+                }
+
+                if (this.state === GAME_STATE.PLAYING) {
+                    this.drawBlock(this.currentBlock);
+                }
+
+                this.drawDropParticles();
+
+                for (const part of this.cutOffParts) {
+                    this.drawCutOffPart(part);
+                }
+            }
+
+            // 绘制楼层块
+            drawBlock(block) {
+                this.ctx.fillStyle = block.color;
+                this.ctx.fillRect(block.x, block.y, block.width, block.height);
+
+                this.ctx.strokeStyle = NOKIA_COLORS.BLACK;
+                this.ctx.lineWidth = 2;
+                this.ctx.strokeRect(block.x, block.y, block.width, block.height);
+
+                this.ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                this.ctx.fillRect(block.x, block.y, block.width, 3);
+
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+                this.ctx.fillRect(block.x, block.y + block.height - 3, block.width, 3);
+            }
+
+            // 绘制被切除的部分
+            drawCutOffPart(part) {
+                this.ctx.fillStyle = part.color;
+                this.ctx.globalAlpha = part.life / 60;
+                this.ctx.fillRect(part.x, part.y, part.width, part.height);
+
+                this.ctx.strokeStyle = NOKIA_COLORS.RED;
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.moveTo(part.x, part.y);
+                this.ctx.lineTo(part.x + part.width, part.y + part.height);
+                this.ctx.stroke();
+
+                this.ctx.globalAlpha = 1;
+            }
+
+            // 绘制下落轨迹
+            drawDropTrail() {
+                for (const trail of this.dropTrail) {
+                    this.ctx.globalAlpha = trail.alpha * 0.3;
+                    this.ctx.fillStyle = trail.color;
+                    this.ctx.fillRect(trail.x, trail.y, trail.width, trail.height);
+                }
+                this.ctx.globalAlpha = 1;
+            }
+
+            // 绘制下落速度线
+            drawDropSpeedLines() {
+                for (const line of this.dropSpeedLines) {
+                    this.ctx.globalAlpha = line.alpha * 0.5;
+                    this.ctx.strokeStyle = '#FFFFFF';
+                    this.ctx.lineWidth = 1;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(line.x, line.y);
+                    this.ctx.lineTo(line.x, line.y + line.length);
+                    this.ctx.stroke();
+                }
+                this.ctx.globalAlpha = 1;
+            }
+
+            // 绘制下落粒子
+            drawDropParticles() {
+                for (const particle of this.dropParticles) {
+                    this.ctx.globalAlpha = particle.life / 30;
+                    this.ctx.fillStyle = particle.color;
+                    this.ctx.beginPath();
+                    this.ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+                    this.ctx.fill();
+                }
+                this.ctx.globalAlpha = 1;
+            }
+
+            // 绘制分数
+            drawScore() {
+                this.ctx.fillStyle = NOKIA_COLORS.BLACK;
+                this.ctx.fillRect(CONFIG.CANVAS_WIDTH / 2 - 60, 30, 120, 40);
+
+                this.ctx.fillStyle = NOKIA_COLORS.GREEN;
+                this.ctx.font = 'bold 28px "Courier New"';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText(this.score.toString().padStart(3, '0'), CONFIG.CANVAS_WIDTH / 2, 60);
+
+                this.ctx.strokeStyle = NOKIA_COLORS.DARK_GRAY;
+                this.ctx.lineWidth = 2;
+                this.ctx.strokeRect(CONFIG.CANVAS_WIDTH / 2 - 60, 30, 120, 40);
+
+                if (this.perfectStackFlash > 0 && this.flashTimer % 20 < 10) {
+                    this.ctx.fillStyle = NOKIA_COLORS.YELLOW;
+                    this.ctx.font = '14px "Courier New"';
+                    this.ctx.fillText('完美!', CONFIG.CANVAS_WIDTH / 2, 85);
+                }
+            }
+
+            // 绘制暂停画面
+            drawPauseScreen() {
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                this.ctx.fillRect(0, 0, CONFIG.CANVAS_WIDTH, CONFIG.CANVAS_HEIGHT);
+
+                this.ctx.fillStyle = NOKIA_COLORS.YELLOW;
+                this.ctx.font = 'bold 32px "Courier New"';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText('暂停', CONFIG.CANVAS_WIDTH / 2, CONFIG.CANVAS_HEIGHT / 2);
+
+                this.ctx.fillStyle = NOKIA_COLORS.WHITE;
+                this.ctx.font = '16px "Courier New"';
+                this.ctx.fillText('按P键或点击继续', CONFIG.CANVAS_WIDTH / 2, CONFIG.CANVAS_HEIGHT / 2 + 40);
+            }
+
+            // 绘制游戏结束画面
+            drawGameOverScreen() {
+                this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+                this.ctx.fillRect(0, 0, CONFIG.CANVAS_WIDTH, CONFIG.CANVAS_HEIGHT);
+
+                this.ctx.fillStyle = NOKIA_COLORS.RED;
+                this.ctx.font = 'bold 36px "Courier New"';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText('GAME OVER', CONFIG.CANVAS_WIDTH / 2, CONFIG.CANVAS_HEIGHT / 2 - 40);
+
+                this.ctx.fillStyle = NOKIA_COLORS.WHITE;
+                this.ctx.font = '24px "Courier New"';
+                this.ctx.fillText('最终楼层: ' + this.score, CONFIG.CANVAS_WIDTH / 2, CONFIG.CANVAS_HEIGHT / 2 + 10);
+
+                if (this.score >= this.highScore) {
+                    this.ctx.fillStyle = NOKIA_COLORS.YELLOW;
+                    this.ctx.font = '20px "Courier New"';
+                    this.ctx.fillText('新纪录!', CONFIG.CANVAS_WIDTH / 2, CONFIG.CANVAS_HEIGHT / 2 + 50);
+                } else {
+                    this.ctx.fillStyle = NOKIA_COLORS.CYAN;
+                    this.ctx.font = '18px "Courier New"';
+                    this.ctx.fillText('最高分: ' + this.highScore, CONFIG.CANVAS_WIDTH / 2, CONFIG.CANVAS_HEIGHT / 2 + 50);
+                }
+
+                this.ctx.fillStyle = NOKIA_COLORS.GREEN;
+                this.ctx.font = '16px "Courier New"';
+                this.ctx.fillText('按空格键重新开始', CONFIG.CANVAS_WIDTH / 2, CONFIG.CANVAS_HEIGHT / 2 + 100);
+            }
+
+            // 绘制红色滤镜
+            drawRedFilter() {
+                this.ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+                this.ctx.fillRect(0, 0, CONFIG.CANVAS_WIDTH, CONFIG.CANVAS_HEIGHT);
+            }
+
+            // 游戏主循环
+            gameLoop() {
+                this.update();
+                this.render();
+                requestAnimationFrame(() => this.gameLoop());
+            }
+        }
+
+        // 启动游戏
+        window.onload = () => {
+            new TowerGame();
+        };
+    </script>
+</body>
+</html>
